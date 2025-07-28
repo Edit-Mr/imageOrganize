@@ -14,6 +14,7 @@
     "cli-progress": "^3.12.0",
     "exiftool-vendored": "^30.3.0",
     "fast-glob": "^3.3.3",
-    "fs-extra": "^11.3.0"
+    "fs-extra": "^11.3.0",
+    "p-limit": "^6.2.0"
   }
 }

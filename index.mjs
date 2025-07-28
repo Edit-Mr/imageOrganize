@@ -1,13 +1,15 @@
-// organize-media-with-progress.mjs
+// organize-media-parallel.mjs
 import { exiftool } from 'exiftool-vendored';
 import fg from 'fast-glob';
 import fs from 'fs-extra';
 import path from 'path';
 import cliProgress from 'cli-progress';
+import pLimit from 'p-limit';
 
 const INPUT_BASE = './recovery';
 const OUTPUT_BASE = './organized';
 const UNKNOWN_DIR = path.join(OUTPUT_BASE, 'unknown');
+const CONCURRENCY = 4; 
 
 const allowedExt = new Set([
   'jpg', 'jpeg', 'png', 'gif', 'bmp',
@@ -32,7 +34,32 @@ async function moveWithNoOverwrite(src, destDir) {
   return destPath;
 }
 
-async function organizeMedia() {
+async function organizeOne(file) {
+  try {
+    const tags = await exiftool.read(file);
+    const dateStr = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
+
+    let date;
+    if (dateStr) {
+      date = new Date(dateStr);
+    } else {
+      const stat = await fs.stat(file);
+      date = stat?.mtime;
+      if (!date) throw new Error('No valid date found');
+    }
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const destDir = path.join(OUTPUT_BASE, `${year}`, `${month}`);
+    await moveWithNoOverwrite(file, destDir);
+    return true;
+  } catch {
+    await moveWithNoOverwrite(file, UNKNOWN_DIR);
+    return false;
+  }
+}
+
+async function organizeMediaParallel() {
   console.log('🔍 Scanning files...');
 
   const allFiles = await fg(`${INPUT_BASE}/**/*`, {
@@ -47,38 +74,23 @@ async function organizeMedia() {
   });
 
   console.log(`📁 Found ${mediaFiles.length} media files.`);
+  console.log(`🚀 Running with ${CONCURRENCY} parallel tasks.`);
 
   const bar = new cliProgress.SingleBar({}, cliProgress.Presets.shades_classic);
   bar.start(mediaFiles.length, 0);
 
-  for (const file of mediaFiles) {
-    try {
-      const tags = await exiftool.read(file);
-      const dateStr = tags.DateTimeOriginal || tags.CreateDate || tags.ModifyDate;
+  const limit = pLimit(CONCURRENCY);
 
-      let date;
-      if (dateStr) {
-        date = new Date(dateStr);
-      } else {
-        const stat = await fs.stat(file);
-        date = stat?.mtime;
-        if (!date) throw new Error('No valid date found');
-      }
+  const tasks = mediaFiles.map(file =>
+    limit(() =>
+      organizeOne(file).then(() => bar.increment())
+    )
+  );
 
-      const year = date.getFullYear();
-      const month = String(date.getMonth() + 1).padStart(2, '0');
-      const destDir = path.join(OUTPUT_BASE, `${year}`, `${month}`);
-      await moveWithNoOverwrite(file, destDir);
-    } catch (err) {
-      await moveWithNoOverwrite(file, UNKNOWN_DIR);
-    }
-
-    bar.increment();
-  }
-
+  await Promise.all(tasks);
   bar.stop();
   await exiftool.end();
-  console.log('✅ Finished organizing.');
+  console.log('✅ All media organized.');
 }
 
-organizeMedia();
+organizeMediaParallel();
